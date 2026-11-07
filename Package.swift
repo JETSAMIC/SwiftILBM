@@ -5,24 +5,17 @@ let package = Package(
     name: "SwiftILBM",
     platforms: [
         .iOS(.v17),
-        .macOS(.v14)
+        .macOS(.v14),
+        .tvOS(.v17),
+        .watchOS(.v10),
+        .visionOS(.v1)
     ],
     products: [
-        .library(
-            name: "SwiftILBM",
-            targets: ["SwiftILBM"]
-        ),
+        .library(name: "SwiftILBM", targets: ["SwiftILBM"])
     ],
     targets: [
-        .target(
-            name: "SwiftILBM",
-            path: "Sources/SwiftILBM"
-        ),
-        .testTarget(
-            name: "SwiftILBMTests",
-            dependencies: ["SwiftILBM"],
-            path: "Tests/SwiftILBMTests"
-        ),
+        .target(name: "SwiftILBM"),
+        .testTarget(name: "SwiftILBMTests", dependencies: ["SwiftILBM"])
     ],
     swiftLanguageModes: [.v6]
 )
