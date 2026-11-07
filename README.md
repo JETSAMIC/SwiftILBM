@@ -1,38 +1,39 @@
 # SwiftILBM
 
-Pure-Swift decoder for **ILBM** (Interleaved Bitmap) images — the IFF-based image
-format used on the Commodore Amiga and ubiquitous in the BBS/demo/ANSI-adjacent
-art scenes that surrounded it.
-
-No C dependencies, no external Swift packages. Outputs `CGImage` (cross-platform),
-`UIImage` on iOS, `NSImage` on macOS.
+Pure-Swift decoder for Amiga IFF ILBM and Deluxe Paint PBM images — indexed, HAM, EHB and true colour — hardened for untrusted input.
 
 ## Requirements
 
-- Swift 6.0+
-- iOS 17+
-- macOS 14+
+- Swift 6.0+ / Xcode 16+
+- iOS 17+, iPadOS 17+, macOS 14+, tvOS 17+, watchOS 10+, visionOS 1+ (verified on the 27.3 SDKs)
+- Foundation only; no third-party dependencies. `cgImage` is available wherever CoreGraphics is, `uiImage` with UIKit (iOS, iPadOS, tvOS, visionOS, watchOS) and `nsImage` with AppKit (macOS).
 
 ## Installation
 
-Add to your `Package.swift`:
-
 ```swift
-.package(url: "https://github.com/prestige-exe/SwiftILBM.git", from: "0.1.0")
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/JETSAMIC/SwiftILBM.git", from: "0.1.0")
+],
+targets: [
+    .target(name: "MyApp", dependencies: ["SwiftILBM"])
+]
 ```
 
-## Usage
+In Xcode: **File ▸ Add Package Dependencies…** and enter the URL above.
+
+## Quick start
 
 ```swift
 import SwiftILBM
 
-let image = try ILBMImage(url: someURL)
-print(image.width, image.height, image.depth)
+let image = try ILBMImage(url: fileURL)                // throws ILBMError
+print(image.width, image.height, image.depth, image.colorMode)
+let firstPixel = Array(image.pixels[0..<4])            // straight RGBA8
 
-// CoreGraphics
+#if canImport(CoreGraphics)
 let cg = image.cgImage
-
-// Platform-specific
+#endif
 #if canImport(UIKit)
 let ui = image.uiImage
 #elseif canImport(AppKit)
@@ -40,28 +41,58 @@ let ns = image.nsImage
 #endif
 ```
 
-## What's supported
+`pixels` is `width * height * 4` bytes, top row first. `indexedPixels` holds palette indices (raw HAM codes for HAM images, `nil` for true colour). `header` exposes every BMHD field, `viewportMode` the CAMG flags and `colorRanges` the CRNG colour-cycling ranges.
 
-- Standard IFF FORM/ILBM parsing (big-endian, padded chunks)
-- BMHD, CMAP, BODY chunks
-- ByteRun1 (PackBits) decompression
-- Uncompressed (raw planar) BODY
-- 1–8 bit-depth indexed images (the BBS/Amiga workhorse case)
-- Optional transparent-color masking via BMHD.transparentColor
+### Untrusted input
 
-## What's deferred
+- Chunk sizes are checked against their container; malformed files throw a typed `ILBMError`, never crash. Covered by truncation-at-every-offset and seeded mutation-fuzz tests.
+- `ILBMImage.Options.maximumPixelCount` (default 64 megapixels) is enforced **before** any allocation, and a ByteRun1 BODY that cannot possibly expand to the declared size is rejected up front.
 
-- **HAM6 / HAM8** (Hold-And-Modify): Amiga-specific 6/8-plane mode where the top
-  2 bits of each pixel are control bits that modify R, G, or B from the previous
-  pixel. Not decoded in this release.
-- **EHB** (Extra-Half-Brite): 6-plane mode where the 6th plane halves the
-  intensity of the indexed color. Not decoded in this release.
-- **24-bit truecolor ILBM** (nPlanes == 24): rare in the wild but defined by the
-  spec. Currently rejected with `ILBMError.unsupportedDepth`.
-- **Mask plane** (BMHD.masking == 1): the optional extra plane after the
-  bitplanes is currently skipped, not interpreted.
-- **SHAM / PCHG** dynamic palette chunks.
+## Spec coverage
+
+| Feature | Status |
+|---|---|
+| IFF chunks, big-endian sizes, odd-size pad byte, unknown-chunk skipping | Supported |
+| `FORM ILBM` | Supported |
+| `FORM PBM ` (Deluxe Paint II Enhanced chunky) | Supported (1–8 planes, no mask plane) |
+| Nested `LIST` / `CAT ` / `FORM ANIM` (first image), `PROP` defaults | Supported |
+| BMHD, incl. `pageWidth/Height`, `xAspect/yAspect` | Supported |
+| Masking 0 (none), 1 (mask plane → alpha), 2 (transparent colour → alpha) | Supported |
+| Masking 3 (lasso) | Partial — rendered opaque |
+| Compression 0 and 1 (ByteRun1, −128 no-op, runs across rows tolerated) | Supported |
+| CMAP, incl. 4-bit left-justified ("OCS") palette scaling | Supported (scaling on by default) |
+| 1–8 plane indexed | Supported |
+| CAMG HAM6 / HAM8 | Supported |
+| CAMG Extra-Half-Brite | Supported |
+| 6-plane files without CAMG (EHB / HAM6 heuristics) | Supported |
+| CAMG HIRES / LACE / SUPERHIRES | Exposed; no effect on pixels |
+| CAMG dual playfield | Unsupported — decoded as plain indexed |
+| 24- and 32-plane true colour ("deep") ILBM | Supported |
+| CRNG colour ranges | Parsed and exposed |
+| CCRT, DRNG, GRAB, DEST, SPRT | Ignored |
+| SHAM / PCHG / CTBL dynamic palettes | Unsupported (static CMAP used) |
+| ANIM deltas, ACBM / RGBN / RGB8 / DEEP FORMs | Unsupported |
+| Encoding | Unsupported (decoder only) |
+
+## Limitations
+
+- Indexed, HAM, EHB and PBM images require a `CMAP` (`ILBMError.missingCMAP`); only true-colour images may omit it.
+- Lasso masking is not computed; dual-playfield images are not split into two playfields.
+- Pixels are not aspect-corrected; use `header.pixelAspectRatio` if you need the original proportions.
+
+## Documentation
+
+DocC documentation is in `Sources/SwiftILBM/SwiftILBM.docc` (**Product ▸ Build Documentation** in Xcode, or `xcodebuild docbuild -scheme SwiftILBM -destination 'generic/platform=macOS'`). The byte-level format reference used to validate this implementation is [Reference/ILBM-Format.md](Reference/ILBM-Format.md).
+
+## Contributing
+
+Issues and pull requests are welcome; files that SwiftILBM mis-decodes are most useful with the file attached or a hand-built fixture. Run `swift test` before submitting; commit messages follow Conventional Commits (`fix(iff): …`, `docs: …`).
+
+## References
+
+- Jerry Morrison, Electronic Arts — *"EA IFF 85" Standard for Interchange Format Files* (1985) and *"ILBM" IFF Interleaved Bitmap* (1986).
+- Commodore-Amiga — *Amiga ROM Kernel Reference Manual: Devices* and *Amiga Hardware Reference Manual*, 3rd ed. (1991).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Christian Vozar.
