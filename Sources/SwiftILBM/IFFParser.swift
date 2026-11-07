@@ -1,66 +1,150 @@
 import Foundation
 
-/// A single IFF sub-chunk: a 4-character ID and its raw payload bytes.
-public struct IFFChunk: Sendable {
-    public let id: String        // 4-char ASCII (e.g. "BMHD", "CMAP", "BODY")
-    public let data: Data        // payload, exact length per chunk header (no padding)
+/// A single IFF chunk: a four-character identifier and its payload.
+public struct IFFChunk: Sendable, Equatable {
+    /// Four-character ASCII identifier, for example `"BMHD"`, `"CMAP"` or
+    /// `"BODY"`. Non-printable bytes are shown as `"?"`.
+    public let id: String
+    /// The payload, exactly as long as the chunk header declares (the pad
+    /// byte that follows odd-length chunks is not included). Zero-based.
+    public let data: Data
+
+    /// Creates a chunk from an identifier and payload.
+    public init(id: String, data: Data) {
+        self.id = id
+        self.data = data
+    }
 }
 
-/// Generic IFF reader. The Amiga EA IFF 85 format wraps everything in a top-level
-/// FORM chunk:
+/// Reader for EA IFF 85 containers.
 ///
-///     "FORM" <u32 BE size> "<TYPE>" <chunks…>
+/// An IFF file is a tree of chunks. Every chunk is
 ///
-/// Each inner chunk is:
+///     <4-char id> <UInt32 big-endian size> <size bytes> [pad byte if size is odd]
 ///
-///     <4-char id> <u32 BE size> <bytes…> [pad to even]
-///
-/// `IFFParser` validates the outer FORM, checks the subtype matches `expectedType`
-/// (e.g. "ILBM"), and returns the inner chunks in document order.
+/// and the group chunks `FORM`, `LIST` and `CAT ` begin their payload with a
+/// 4-character type and then contain further chunks. `IFFParser` locates the
+/// first `FORM` of the requested type — at the top level, or nested inside
+/// `LIST`, `CAT ` or another `FORM` such as `ANIM` — and returns its chunks.
+/// Within a `LIST`, `PROP` chunks of the same type supply defaults; they are
+/// appended after the `FORM`'s own chunks, so the `FORM`'s chunks win when a
+/// caller takes the first match.
 public enum IFFParser {
-    /// Parse a FORM container and return its chunks.
+
+    /// Maximum group-chunk nesting depth that is searched.
+    static let maximumNestingDepth = 8
+
+    /// Parse an IFF file and return the chunks of the first `FORM` of type
+    /// `expectedType`.
+    ///
     /// - Parameters:
-    ///   - data: Raw bytes of the entire IFF file.
-    ///   - expectedType: 4-char subtype to enforce (default "ILBM").
-    /// - Throws: `ILBMError.invalidSignature`, `ILBMError.truncated`.
+    ///   - data: The entire IFF file.
+    ///   - expectedType: Four-character `FORM` type to look for. Defaults to
+    ///     `"ILBM"`.
+    /// - Returns: The `FORM`'s chunks in file order (followed by any `PROP`
+    ///   defaults from an enclosing `LIST`).
+    /// - Throws: ``ILBMError/truncated(stage:)`` if the file is shorter than a
+    ///   group header or a chunk runs past the end of its container, or
+    ///   ``ILBMError/invalidSignature`` if no matching `FORM` exists.
     public static func parse(_ data: Data, expectedType: String = "ILBM") throws -> [IFFChunk] {
+        try findForm(in: data, types: [expectedType]).chunks
+    }
+
+    /// Locate the first `FORM` whose type is in `types`.
+    static func findForm(in input: Data, types: Set<String>) throws -> (type: String, chunks: [IFFChunk]) {
+        let data = input.startIndex == 0 ? input : Data(input)
         guard data.count >= 12 else { throw ILBMError.truncated(stage: "FORM header") }
+        let id = fourCC(data, at: 0)
+        guard ["FORM", "LIST", "CAT "].contains(id) else { throw ILBMError.invalidSignature }
+        // A wrong group size is common in the wild; clamp it to the buffer.
+        let end = clampedEnd(start: 8, size: beUInt32(data, at: 4), limit: data.count)
+        let found = try search(data, groupID: id, typeOffset: 8, end: end,
+                               types: types, props: [], depth: 0)
+        guard let found else { throw ILBMError.invalidSignature }
+        return found
+    }
 
-        let formID = fourCC(data, at: 0)
-        let formSize = beUInt32(data, at: 4)
-        let subtype = fourCC(data, at: 8)
+    /// Search the group chunk whose type field is at `typeOffset` and whose
+    /// payload ends at `end`.
+    private static func search(
+        _ data: Data,
+        groupID: String,
+        typeOffset: Int,
+        end: Int,
+        types: Set<String>,
+        props: [IFFChunk],
+        depth: Int
+    ) throws -> (type: String, chunks: [IFFChunk])? {
+        guard typeOffset + 4 <= end else { return nil }
+        let groupType = fourCC(data, at: typeOffset)
 
-        guard formID == "FORM" else { throw ILBMError.invalidSignature }
-        guard subtype == expectedType else { throw ILBMError.invalidSignature }
+        if groupID == "FORM" && types.contains(groupType) {
+            var chunks: [IFFChunk] = []
+            try walk(data, from: typeOffset + 4, to: end) { id, start, payloadEnd in
+                chunks.append(IFFChunk(id: id, data: data.subdata(in: start..<payloadEnd)))
+            }
+            return (groupType, chunks + props)
+        }
 
-        // The 4-byte subtype counts toward formSize. Inner chunks therefore live
-        // in data[12 ..< 8 + formSize], capped by the actual buffer length.
-        let declaredEnd = 8 + Int(formSize)
-        let end = min(declaredEnd, data.count)
-        var cursor = 12
+        guard depth < maximumNestingDepth else { return nil }
 
-        var chunks: [IFFChunk] = []
+        var result: (type: String, chunks: [IFFChunk])?
+        var inheritedProps = props
+        try walk(data, from: typeOffset + 4, to: end) { id, start, payloadEnd in
+            guard result == nil else { return }
+            switch id {
+            case "PROP" where groupID == "LIST" && payloadEnd - start >= 4:
+                if types.contains(fourCC(data, at: start)) {
+                    var propChunks: [IFFChunk] = []
+                    try walk(data, from: start + 4, to: payloadEnd) { pid, ps, pe in
+                        propChunks.append(IFFChunk(id: pid, data: data.subdata(in: ps..<pe)))
+                    }
+                    inheritedProps = propChunks + inheritedProps
+                }
+            case "FORM", "LIST", "CAT ":
+                result = try search(data, groupID: id, typeOffset: start, end: payloadEnd,
+                                    types: types, props: inheritedProps, depth: depth + 1)
+            default:
+                break
+            }
+        }
+        return result
+    }
+
+    /// Visit each chunk in `[start, end)`.
+    ///
+    /// The visitor receives the chunk ID and the absolute payload range.
+    /// Iteration is bounded: every step advances by at least 8 bytes.
+    private static func walk(
+        _ data: Data,
+        from start: Int,
+        to end: Int,
+        _ visit: (String, Int, Int) throws -> Void
+    ) throws {
+        var cursor = start
         while cursor + 8 <= end {
             let id = fourCC(data, at: cursor)
-            let size = Int(beUInt32(data, at: cursor + 4))
+            let size = beUInt32(data, at: cursor + 4)
             let payloadStart = cursor + 8
-            let payloadEnd = payloadStart + size
-            guard payloadEnd <= end else {
+            guard UInt64(size) <= UInt64(end - payloadStart) else {
                 throw ILBMError.truncated(stage: "chunk \(id)")
             }
-            let payload = data.subdata(in: payloadStart ..< payloadEnd)
-            chunks.append(IFFChunk(id: id, data: payload))
-            // Chunks are padded to even byte boundary; pad byte is not counted in size.
-            cursor = payloadEnd + (size & 1)
+            let payloadEnd = payloadStart + Int(size)
+            try visit(id, payloadStart, payloadEnd)
+            // Odd-sized chunks are followed by a pad byte not counted in size.
+            cursor = payloadEnd + Int(size & 1)
         }
-        return chunks
+    }
+
+    /// `start + size`, clamped to `limit` without overflowing on 32-bit Int.
+    private static func clampedEnd(start: Int, size: UInt32, limit: Int) -> Int {
+        UInt64(size) >= UInt64(limit - start) ? limit : start + Int(size)
     }
 
     // MARK: - Byte helpers
 
-    /// Read a 4-character ASCII identifier from `data` at `offset`.
-    /// Non-ASCII bytes are replaced with "?" so the result is always 4 chars.
-    @inline(__always)
+    /// Read a 4-character ASCII identifier at `offset` (relative to
+    /// `data.startIndex`). Non-printable bytes become `"?"`.
     static func fourCC(_ data: Data, at offset: Int) -> String {
         var s = ""
         s.reserveCapacity(4)
@@ -75,27 +159,22 @@ public enum IFFParser {
         return s
     }
 
-    /// Read a big-endian UInt32 from `data` at `offset`.
+    /// Read a big-endian UInt32 at `offset` (relative to `data.startIndex`).
     @inline(__always)
     static func beUInt32(_ data: Data, at offset: Int) -> UInt32 {
         let base = data.startIndex + offset
-        let b0 = UInt32(data[base])
-        let b1 = UInt32(data[base + 1])
-        let b2 = UInt32(data[base + 2])
-        let b3 = UInt32(data[base + 3])
-        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+        return (UInt32(data[base]) << 24) | (UInt32(data[base + 1]) << 16)
+            | (UInt32(data[base + 2]) << 8) | UInt32(data[base + 3])
     }
 
-    /// Read a big-endian UInt16 from `data` at `offset`.
+    /// Read a big-endian UInt16 at `offset` (relative to `data.startIndex`).
     @inline(__always)
     static func beUInt16(_ data: Data, at offset: Int) -> UInt16 {
         let base = data.startIndex + offset
-        let b0 = UInt16(data[base])
-        let b1 = UInt16(data[base + 1])
-        return (b0 << 8) | b1
+        return (UInt16(data[base]) << 8) | UInt16(data[base + 1])
     }
 
-    /// Read a big-endian Int16 from `data` at `offset`.
+    /// Read a big-endian Int16 at `offset` (relative to `data.startIndex`).
     @inline(__always)
     static func beInt16(_ data: Data, at offset: Int) -> Int16 {
         Int16(bitPattern: beUInt16(data, at: offset))
