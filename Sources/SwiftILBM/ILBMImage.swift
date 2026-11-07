@@ -129,7 +129,8 @@ public struct ILBMImage: Sendable, Equatable {
         let height = Int(bmhd.height)
         guard width > 0 && height > 0 else { throw ILBMError.invalidDimensions }
         let area = width.multipliedReportingOverflow(by: height)
-        guard !area.overflow, area.partialValue <= options.maximumPixelCount else {
+        guard !area.overflow, area.partialValue <= options.maximumPixelCount,
+              !area.partialValue.multipliedReportingOverflow(by: 4).overflow else {
             throw ILBMError.imageTooLarge(width: width, height: height, limit: options.maximumPixelCount)
         }
 
