@@ -1,69 +1,66 @@
 import Foundation
 
-/// Decodes the BODY chunk into raw (uncompressed) planar bytes.
+/// Decodes the `BODY` chunk into uncompressed row data.
 ///
-/// BODY storage layout for one row of an N-plane ILBM:
+/// ILBM BODY layout, repeated for every row:
 ///
-///     plane0_row[bytesPerRow] plane1_row[bytesPerRow] … planeN-1_row[bytesPerRow]
+///     plane 0 row | plane 1 row | … | plane N-1 row | [mask row if masking == 1]
 ///
-/// repeated for every row. If `BMHD.masking == 1` there is an additional mask
-/// plane appended after the N bitplanes on every row; we currently *skip past*
-/// those bytes during decoding but don't expose them.
+/// where each plane row is ``BMHDChunk/bytesPerRow`` bytes. PBM BODY rows are
+/// one byte per pixel, padded to an even length.
 ///
-/// Compression modes:
-///  - 0: uncompressed; payload is exactly height * planesPerRow * bytesPerRow bytes
-///       (plus optional mask).
-///  - 1: ByteRun1 (Apple PackBits). Per-row decoding is not required — the spec
-///       allows runs to cross row boundaries, though most encoders restart per
-///       row. We decode the whole stream into one buffer of the expected size.
+/// Compression 1 is ByteRun1. The specification has encoders restart the
+/// run-length coder for every plane row, but this decoder treats the BODY as
+/// one continuous stream, so it also accepts files whose runs cross row
+/// boundaries; for conforming files the output is identical.
 enum BODYChunk {
-    /// Decode the BODY payload into raw planar bytes, ready for planar→chunky
-    /// conversion. Mask-plane bytes (if any) are stripped.
-    static func decode(_ data: Data, bmhd: BMHDChunk) throws -> Data {
-        let bytesPerPlaneRow = bmhd.bytesPerRow
-        let planeCount = Int(bmhd.nPlanes)
-        let maskPlanes = (bmhd.masking == 1) ? 1 : 0
-        let totalPlanesPerRow = planeCount + maskPlanes
-        let rawRowBytes = totalPlanesPerRow * bytesPerPlaneRow
-        let expectedTotal = rawRowBytes * Int(bmhd.height)
 
-        let raw: Data
-        switch bmhd.compression {
+    /// Decode `height` rows of `rowBytes` bytes each.
+    ///
+    /// - Parameters:
+    ///   - data: The BODY payload.
+    ///   - rowBytes: Uncompressed bytes per row (all planes plus any mask).
+    ///   - height: Number of rows.
+    ///   - compression: `BMHD.compression`.
+    /// - Returns: Exactly `rowBytes * height` bytes.
+    /// - Throws: ``ILBMError/unsupportedCompression(_:)``,
+    ///   ``ILBMError/truncated(stage:)`` for a short uncompressed body,
+    ///   ``ILBMError/malformedRLE`` for a bad or short ByteRun1 stream, or
+    ///   ``ILBMError/invalidDimensions`` if the size overflows `Int`.
+    static func decode(_ data: Data, rowBytes: Int, height: Int, compression: UInt8) throws -> [UInt8] {
+        let product = rowBytes.multipliedReportingOverflow(by: height)
+        guard rowBytes > 0, height > 0, !product.overflow else { throw ILBMError.invalidDimensions }
+        let expectedTotal = product.partialValue
+
+        switch compression {
         case 0:
             guard data.count >= expectedTotal else {
                 throw ILBMError.truncated(stage: "BODY (raw)")
             }
-            raw = data.prefix(expectedTotal)
+            return Array(data.prefix(expectedTotal))
         case 1:
-            raw = try byteRun1Decode(data, expectedSize: expectedTotal)
+            return Array(try byteRun1Decode(data, expectedSize: expectedTotal))
         default:
-            throw ILBMError.unsupportedCompression(bmhd.compression)
+            throw ILBMError.unsupportedCompression(compression)
         }
-
-        // Strip mask plane bytes per row if present.
-        guard maskPlanes > 0 else { return raw }
-
-        var stripped = Data(capacity: planeCount * bytesPerPlaneRow * Int(bmhd.height))
-        for row in 0 ..< Int(bmhd.height) {
-            let rowStart = row * rawRowBytes
-            let imageBytes = planeCount * bytesPerPlaneRow
-            stripped.append(raw.subdata(in: rowStart ..< rowStart + imageBytes))
-            // mask bytes after imageBytes are discarded
-        }
-        return stripped
     }
 
     /// Decompress a ByteRun1 (PackBits) stream into exactly `expectedSize` bytes.
     ///
-    /// Per Apple's PackBits spec, the control byte `n` is read as a signed Int8:
+    /// The control byte `n` is read as a signed Int8:
     ///   -  0...127  → copy the next (n + 1) bytes literally
     ///   -  -1...-127 → repeat the next byte (-n + 1) times
     ///   -  -128      → no-op (skip the control byte)
     ///
-    /// We allow the decoded output to *meet or exceed* expectedSize and trim;
-    /// real-world encoders sometimes emit a trailing literal that overshoots
-    /// by a byte or two.
+    /// Output that overshoots `expectedSize` (a trailing packet written past
+    /// the last row by some encoders) is trimmed.
     static func byteRun1Decode(_ data: Data, expectedSize: Int) throws -> Data {
+        // Decompression-bomb guard: two input bytes expand to at most 128
+        // output bytes, so reject impossible sizes before allocating.
+        let maxExpansion = (data.count / 2).multipliedReportingOverflow(by: 128)
+        if !maxExpansion.overflow && maxExpansion.partialValue < expectedSize {
+            throw ILBMError.malformedRLE
+        }
         var out = Data(capacity: expectedSize)
         var i = data.startIndex
         let end = data.endIndex
@@ -93,8 +90,7 @@ enum BODYChunk {
         return out
     }
 
-    /// Encode a byte sequence with ByteRun1. Used only by the round-trip test;
-    /// not exposed publicly. Implementation favors correctness over compression
+    /// Encode a byte sequence with ByteRun1. Used by tests only; not public. Implementation favors correctness over compression
     /// ratio: emits literal runs and replicate runs greedily up to 128 bytes each.
     static func byteRun1Encode(_ data: Data) -> Data {
         var out = Data()

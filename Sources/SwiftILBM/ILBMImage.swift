@@ -1,17 +1,76 @@
 import Foundation
-import CoreGraphics
 
-#if canImport(UIKit)
-import UIKit
-#endif
+/// A decoded IFF ILBM or PBM image.
+///
+/// Construct one from `Data` or a file `URL`, then read the RGBA8
+/// ``pixels``, the palette indices, the header fields, or (on Apple
+/// platforms) a `CGImage`.
+///
+/// ```swift
+/// let image = try ILBMImage(url: url)
+/// print(image.width, image.height, image.colorMode)
+/// let cg = image.cgImage
+/// ```
+///
+/// Decoding is a pure function of the input bytes and is safe to call from
+/// any thread.
+public struct ILBMImage: Sendable, Equatable {
 
-#if canImport(AppKit)
-import AppKit
-#endif
+    // MARK: - Nested types
 
-/// Public entry point. Construct from `Data` or a file `URL`; inspect the
-/// header/palette and pull a `CGImage` (or platform-specific image) out.
-public struct ILBMImage: Sendable {
+    /// The IFF `FORM` type the image was read from.
+    public enum FormType: String, Sendable, Equatable, CaseIterable {
+        /// `FORM ILBM` — interleaved bitplanes (the Amiga standard).
+        case ilbm = "ILBM"
+        /// `FORM PBM ` — one byte per pixel ("chunky"), written by
+        /// Deluxe Paint II Enhanced on the PC.
+        case pbm = "PBM "
+    }
+
+    /// How pixel values map to colours.
+    public enum ColorMode: Sendable, Equatable, CaseIterable {
+        /// Each pixel indexes ``ILBMImage/palette``.
+        case indexed
+        /// Extra-Half-Brite: indices 32...63 are palette entries 0...31 at
+        /// half brightness.
+        case extraHalfbrite
+        /// Hold-And-Modify (HAM6 or HAM8).
+        case holdAndModify
+        /// 24- or 32-plane direct colour ("deep" ILBM); no palette.
+        case trueColor
+    }
+
+    /// Decoding limits and behaviour switches.
+    public struct Options: Sendable, Equatable {
+        /// Largest `width * height` accepted before any pixel memory is
+        /// allocated. Defaults to ``ILBMImage/defaultMaximumPixelCount``.
+        public var maximumPixelCount: Int
+        /// Scale palettes whose components all have a zero low nibble
+        /// (4-bit OCS/ECS values stored as `n << 4`) to the full 8-bit range.
+        /// Defaults to `true`. See ``CMAPChunk/expandingLeftJustified4Bit()``.
+        public var expandsLeftJustified4BitPalettes: Bool
+
+        /// Creates decoding options.
+        ///
+        /// - Parameters:
+        ///   - maximumPixelCount: Pixel-count limit. Defaults to
+        ///     ``ILBMImage/defaultMaximumPixelCount``.
+        ///   - expandsLeftJustified4BitPalettes: Whether to scale 4-bit
+        ///     palettes. Defaults to `true`.
+        public init(
+            maximumPixelCount: Int = ILBMImage.defaultMaximumPixelCount,
+            expandsLeftJustified4BitPalettes: Bool = true
+        ) {
+            self.maximumPixelCount = maximumPixelCount
+            self.expandsLeftJustified4BitPalettes = expandsLeftJustified4BitPalettes
+        }
+
+        /// The default options.
+        public static let `default` = Options()
+    }
+
+    /// Default cap on `width * height`: 64 megapixels (256 MiB of RGBA).
+    public static let defaultMaximumPixelCount = 1 << 26
 
     // MARK: - Public properties
 
@@ -19,115 +78,181 @@ public struct ILBMImage: Sendable {
     public let width: Int
     /// Image height in pixels.
     public let height: Int
-    /// Bit depth (1–8). Number of planes in the source ILBM.
+    /// Bits per pixel: `BMHD.nPlanes` (1–8, 24 or 32).
     public let depth: Int
-    /// Indexed palette (empty for non-indexed images).
+    /// The `FORM` type the image was read from.
+    public let formType: FormType
+    /// How pixel values were mapped to colours.
+    public let colorMode: ColorMode
+    /// The colour map used for decoding (after 4-bit expansion, if enabled).
+    /// Empty for true-colour images without a `CMAP`. For EHB images this is
+    /// the stored map; the half-bright entries are derived from it.
     public let palette: [CMAPChunk.Color]
-    /// Decoded BMHD chunk, in case callers want masking / aspect-ratio fields.
+    /// The decoded `BMHD` chunk (masking, aspect ratio, page size, …).
     public let header: BMHDChunk
-
-    // Cached RGBA8 buffer + indexed buffer, in row-major order.
-    private let rgba: [UInt8]
-    public let indexedPixels: [UInt8]
+    /// Display-mode flags from the `CAMG` chunk, or `nil` if it is absent.
+    public let viewportMode: ILBMViewportMode?
+    /// Colour-cycling ranges from `CRNG` chunks, in file order.
+    public let colorRanges: [ILBMColorRange]
+    /// One raw pixel value per pixel, row-major: palette indices for indexed,
+    /// EHB and PBM images, raw HAM codes for HAM images, and `nil` for
+    /// true-colour images.
+    public let indexedPixels: [UInt8]?
+    /// `width * height * 4` bytes of straight (non-premultiplied) RGBA8,
+    /// top row first. Alpha is 0 for transparent-colour pixels
+    /// (`masking == 2`), for pixels outside the mask plane (`masking == 1`),
+    /// and from the alpha planes of 32-plane images; 255 elsewhere.
+    public let pixels: [UInt8]
 
     // MARK: - Init
 
-    /// Load an ILBM image from raw bytes.
-    /// - Throws: any `ILBMError` if parsing or decoding fails.
-    public init(data: Data) throws {
-        let chunks = try IFFParser.parse(data, expectedType: "ILBM")
+    /// Decode an ILBM or PBM image from the complete file contents.
+    ///
+    /// The first `FORM ILBM` or `FORM PBM ` is used, whether at the top level
+    /// or nested in a `LIST`, `CAT ` or `FORM ANIM`.
+    ///
+    /// - Parameters:
+    ///   - data: The file contents.
+    ///   - options: Limits and behaviour switches. Defaults to
+    ///     ``Options/default``.
+    /// - Throws: An ``ILBMError`` describing the first problem found.
+    public init(data: Data, options: Options = .default) throws {
+        let form = try IFFParser.findForm(in: data, types: [FormType.ilbm.rawValue, FormType.pbm.rawValue])
+        let formType = FormType(rawValue: form.type) ?? .ilbm
+        let chunks = form.chunks
+        func chunk(_ id: String) -> Data? { chunks.first(where: { $0.id == id })?.data }
 
-        guard let bmhdData = chunks.first(where: { $0.id == "BMHD" })?.data else {
-            throw ILBMError.missingBMHD
-        }
+        guard let bmhdData = chunk("BMHD") else { throw ILBMError.missingBMHD }
         let bmhd = try BMHDChunk(data: bmhdData)
 
-        guard bmhd.width > 0 && bmhd.height > 0 else { throw ILBMError.invalidDimensions }
-        guard bmhd.nPlanes >= 1 && bmhd.nPlanes <= 8 else {
+        let width = Int(bmhd.width)
+        let height = Int(bmhd.height)
+        guard width > 0 && height > 0 else { throw ILBMError.invalidDimensions }
+        let area = width.multipliedReportingOverflow(by: height)
+        guard !area.overflow, area.partialValue <= options.maximumPixelCount else {
+            throw ILBMError.imageTooLarge(width: width, height: height, limit: options.maximumPixelCount)
+        }
+
+        let planes = Int(bmhd.nPlanes)
+        guard let masking = bmhd.maskingMode else { throw ILBMError.unsupportedMasking(bmhd.masking) }
+        guard bmhd.compressionMode != nil else { throw ILBMError.unsupportedCompression(bmhd.compression) }
+        switch formType {
+        case .ilbm:
+            guard (1...8).contains(planes) || planes == 24 || planes == 32 else {
+                throw ILBMError.unsupportedDepth(bmhd.nPlanes)
+            }
+        case .pbm:
+            guard (1...8).contains(planes) else { throw ILBMError.unsupportedDepth(bmhd.nPlanes) }
+            guard masking != .hasMask else { throw ILBMError.unsupportedMasking(bmhd.masking) }
+        }
+
+        let viewportMode = try chunk("CAMG").map { try ILBMViewportMode(camg: $0) }
+        let colorRanges = chunks.filter { $0.id == "CRNG" }.compactMap { ILBMColorRange(crng: $0.data) }
+
+        var cmap = chunk("CMAP").map(CMAPChunk.init(data:))
+        if options.expandsLeftJustified4BitPalettes {
+            cmap = cmap?.expandingLeftJustified4Bit()
+        }
+
+        let colorMode = Self.colorMode(formType: formType, planes: planes,
+                                       viewportMode: viewportMode, paletteCount: cmap?.colors.count)
+        if colorMode == .holdAndModify && planes != 6 && planes != 8 {
             throw ILBMError.unsupportedDepth(bmhd.nPlanes)
         }
+        if colorMode != .trueColor && cmap == nil { throw ILBMError.missingCMAP }
+        let palette = cmap?.colors ?? []
 
-        guard let bodyData = chunks.first(where: { $0.id == "BODY" })?.data else {
-            throw ILBMError.missingBODY
+        guard let bodyData = chunk("BODY") else { throw ILBMError.missingBODY }
+
+        // Decode the BODY rows.
+        let rowStride: Int
+        let layout: PlanarToChunky.Layout
+        switch formType {
+        case .pbm:
+            rowStride = (width + 1) & ~1
+            layout = .init(width: width, height: height, bytesPerPlaneRow: rowStride, rowStride: rowStride)
+        case .ilbm:
+            let planeRows = planes + (masking == .hasMask ? 1 : 0)
+            rowStride = planeRows * bmhd.bytesPerRow
+            layout = .init(width: width, height: height, bytesPerPlaneRow: bmhd.bytesPerRow, rowStride: rowStride)
+        }
+        let body = try BODYChunk.decode(bodyData, rowBytes: rowStride, height: height,
+                                        compression: bmhd.compression)
+
+        // Convert to pixel values and RGBA.
+        var indices: [UInt8]?
+        var rgba: [UInt8]
+        let transparentIndex = masking == .hasTransparentColor ? Int(bmhd.transparentColor) : nil
+        switch (formType, colorMode) {
+        case (.pbm, _):
+            let values = PlanarToChunky.chunkyPixels(body: body, width: width, height: height, rowStride: rowStride)
+            indices = values
+            rgba = PlanarToChunky.rgbaPixels(indices: values, palette: palette, transparentIndex: transparentIndex)
+        case (.ilbm, .trueColor):
+            rgba = PlanarToChunky.deepRGBA(planar: body, layout: layout, planes: planes)
+        case (.ilbm, .holdAndModify):
+            let values = PlanarToChunky.indexedPixels(planar: body, layout: layout, planes: planes)
+            indices = values
+            rgba = PlanarToChunky.hamRGBA(codes: values, width: width, height: height,
+                                          planes: planes, palette: palette)
+        case (.ilbm, .extraHalfbrite):
+            let values = PlanarToChunky.indexedPixels(planar: body, layout: layout, planes: planes)
+            indices = values
+            rgba = PlanarToChunky.rgbaPixels(indices: values,
+                                             palette: PlanarToChunky.extraHalfbritePalette(palette),
+                                             transparentIndex: transparentIndex)
+        case (.ilbm, .indexed):
+            let values = PlanarToChunky.indexedPixels(planar: body, layout: layout, planes: planes)
+            indices = values
+            rgba = PlanarToChunky.rgbaPixels(indices: values, palette: palette, transparentIndex: transparentIndex)
         }
 
-        let cmap: CMAPChunk
-        if let cmapData = chunks.first(where: { $0.id == "CMAP" })?.data {
-            cmap = CMAPChunk(data: cmapData)
-        } else {
-            // Indexed image without a CMAP is technically legal (greyscale ramp
-            // implied) but vanishingly rare. We require one here so output is
-            // unambiguous; callers can attach a default palette and retry if
-            // they need otherwise.
-            throw ILBMError.missingCMAP
+        if formType == .ilbm && masking == .hasMask {
+            let alpha = PlanarToChunky.maskAlpha(planar: body, layout: layout, maskPlane: planes)
+            for (i, a) in alpha.enumerated() where a == 0 { rgba[i * 4 + 3] = 0 }
         }
-
-        let planar = try BODYChunk.decode(bodyData, bmhd: bmhd)
-        let indices = PlanarToChunky.indexedPixels(planar: planar, bmhd: bmhd)
-
-        let transparentIdx: Int? = (bmhd.masking == 2) ? Int(bmhd.transparentColor) : nil
-        let rgba = PlanarToChunky.rgbaPixels(
-            indices: indices,
-            palette: cmap.colors,
-            transparentIndex: transparentIdx
-        )
 
         self.header        = bmhd
-        self.width         = Int(bmhd.width)
-        self.height        = Int(bmhd.height)
-        self.depth         = Int(bmhd.nPlanes)
-        self.palette       = cmap.colors
+        self.width         = width
+        self.height        = height
+        self.depth         = planes
+        self.formType      = formType
+        self.colorMode     = colorMode
+        self.palette       = palette
+        self.viewportMode  = viewportMode
+        self.colorRanges   = colorRanges
         self.indexedPixels = indices
-        self.rgba          = rgba
+        self.pixels        = rgba
     }
 
-    /// Convenience: load from a file URL.
-    public init(url: URL) throws {
-        let data = try Data(contentsOf: url)
-        try self.init(data: data)
+    /// Decode an ILBM or PBM file at `url`.
+    ///
+    /// - Parameters:
+    ///   - url: A file URL.
+    ///   - options: Limits and behaviour switches. Defaults to
+    ///     ``Options/default``.
+    /// - Throws: Any error from reading the file, or an ``ILBMError``.
+    public init(url: URL, options: Options = .default) throws {
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        try self.init(data: data, options: options)
     }
 
-    // MARK: - Image accessors
-
-    /// CoreGraphics representation. Always RGBA8 sRGB, premultiplied-last.
-    public var cgImage: CGImage? {
-        let bitsPerComponent = 8
-        let bitsPerPixel = 32
-        let bytesPerRow = width * 4
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-
-        guard let provider = CGDataProvider(data: Data(rgba) as CFData) else {
-            return nil
+    /// Choose the colour mode from `CAMG` flags, falling back to the
+    /// de-facto heuristics for 6-plane files without a `CAMG` chunk
+    /// (32 colours → EHB, 16 or fewer → HAM6).
+    static func colorMode(formType: FormType, planes: Int,
+                          viewportMode: ILBMViewportMode?, paletteCount: Int?) -> ColorMode {
+        if formType == .pbm { return .indexed }
+        if planes > 8 { return .trueColor }
+        if let mode = viewportMode {
+            if mode.contains(.ham) { return .holdAndModify }
+            if mode.contains(.extraHalfbrite) && planes == 6 { return .extraHalfbrite }
+            return .indexed
         }
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: bitsPerComponent,
-            bitsPerPixel: bitsPerPixel,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: bitmapInfo,
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
+        if planes == 6, let count = paletteCount {
+            if count == 32 { return .extraHalfbrite }
+            if count <= 16 { return .holdAndModify }
+        }
+        return .indexed
     }
-
-    #if canImport(UIKit)
-    /// UIImage representation (iOS / tvOS / visionOS / watchOS).
-    public var uiImage: UIImage? {
-        guard let cg = cgImage else { return nil }
-        return UIImage(cgImage: cg)
-    }
-    #endif
-
-    #if canImport(AppKit)
-    /// NSImage representation (macOS).
-    public var nsImage: NSImage? {
-        guard let cg = cgImage else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: width, height: height))
-    }
-    #endif
 }

@@ -94,11 +94,12 @@ final class EndToEndTests: XCTestCase {
     }
 
     func testUnsupportedDepthThrows() {
-        // nPlanes = 24 (truecolor) is rejected.
+        // nPlanes = 12 is rejected. (This test used nPlanes = 24, which the
+        // ILBM spec defines as 24-bit true colour and is now supported.)
         let bmhd: [UInt8] = [
             0x00, 0x02, 0x00, 0x01,
             0x00, 0x00, 0x00, 0x00,
-            24, 0x00, 0x00, 0x00,
+            12, 0x00, 0x00, 0x00,
             0x00, 0x00,
             0x01, 0x01,
             0x00, 0x02, 0x00, 0x01
@@ -106,7 +107,7 @@ final class EndToEndTests: XCTestCase {
         let body: [UInt8] = Array(repeating: 0, count: 48)
         let data = makeFORM(chunks: [("BMHD", bmhd), ("BODY", body)])
         XCTAssertThrowsError(try ILBMImage(data: data)) { err in
-            XCTAssertEqual(err as? ILBMError, .unsupportedDepth(24))
+            XCTAssertEqual(err as? ILBMError, .unsupportedDepth(12))
         }
     }
 
