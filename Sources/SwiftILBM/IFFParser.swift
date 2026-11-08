@@ -16,6 +16,46 @@ public struct IFFChunk: Sendable, Equatable {
     }
 }
 
+/// A located `FORM` with its own chunks and the `PROP` defaults in scope.
+struct IFFForm {
+    /// The FORM type, for example `"ILBM"`.
+    let type: String
+    /// The FORM's own chunks, in file order.
+    let chunks: [IFFChunk]
+    /// Chunks of the matching `PROP` of each enclosing `LIST`, innermost
+    /// `LIST` first.
+    let propScopes: [[IFFChunk]]
+
+    /// The FORM's first `BODY`. A `BODY` is never inherited from a `PROP`.
+    var body: Data? { chunks.first { $0.id == "BODY" }?.data }
+
+    /// Resolve a property chunk with the ILBM precedence rules: the last
+    /// occurrence before `BODY` wins; failing that, an occurrence after
+    /// `BODY` (tolerated for lenient reading); failing that, the last
+    /// occurrence in the innermost `PROP` that has one.
+    func property(_ id: String) -> Data? {
+        let bodyIndex = chunks.firstIndex { $0.id == "BODY" } ?? chunks.endIndex
+        if let local = chunks[..<bodyIndex].last(where: { $0.id == id }) { return local.data }
+        if let late = chunks[bodyIndex...].first(where: { $0.id == id }) { return late.data }
+        for scope in propScopes {
+            if let inherited = scope.last(where: { $0.id == id }) { return inherited.data }
+        }
+        return nil
+    }
+
+    /// All occurrences of a repeatable property such as `CRNG`: the FORM's
+    /// own if it has any, else those of the innermost `PROP` that has any.
+    func repeatedProperty(_ id: String) -> [Data] {
+        let local = chunks.filter { $0.id == id }.map(\.data)
+        if !local.isEmpty { return local }
+        for scope in propScopes {
+            let inherited = scope.filter { $0.id == id }.map(\.data)
+            if !inherited.isEmpty { return inherited }
+        }
+        return []
+    }
+}
+
 /// Reader for EA IFF 85 containers.
 ///
 /// An IFF file is a tree of chunks. Every chunk is
@@ -27,8 +67,7 @@ public struct IFFChunk: Sendable, Equatable {
 /// first `FORM` of the requested type — at the top level, or nested inside
 /// `LIST`, `CAT ` or another `FORM` such as `ANIM` — and returns its chunks.
 /// Within a `LIST`, `PROP` chunks of the same type supply defaults; they are
-/// appended after the `FORM`'s own chunks, so the `FORM`'s chunks win when a
-/// caller takes the first match.
+/// appended after the `FORM`'s own chunks (innermost `LIST` first).
 public enum IFFParser {
 
     /// Maximum group-chunk nesting depth that is searched.
@@ -47,11 +86,12 @@ public enum IFFParser {
     ///   group header or a chunk runs past the end of its container, or
     ///   ``ILBMError/invalidSignature`` if no matching `FORM` exists.
     public static func parse(_ data: Data, expectedType: String = "ILBM") throws -> [IFFChunk] {
-        try findForm(in: data, types: [expectedType]).chunks
+        let form = try findForm(in: data, types: [expectedType])
+        return form.chunks + form.propScopes.flatMap { $0 }
     }
 
     /// Locate the first `FORM` whose type is in `types`.
-    static func findForm(in input: Data, types: Set<String>) throws -> (type: String, chunks: [IFFChunk]) {
+    static func findForm(in input: Data, types: Set<String>) throws -> IFFForm {
         let data = input.startIndex == 0 ? input : Data(input)
         guard data.count >= 12 else { throw ILBMError.truncated(stage: "FORM header") }
         let id = fourCC(data, at: 0)
@@ -72,9 +112,9 @@ public enum IFFParser {
         typeOffset: Int,
         end: Int,
         types: Set<String>,
-        props: [IFFChunk],
+        props: [[IFFChunk]],
         depth: Int
-    ) throws -> (type: String, chunks: [IFFChunk])? {
+    ) throws -> IFFForm? {
         guard typeOffset + 4 <= end else { return nil }
         let groupType = fourCC(data, at: typeOffset)
 
@@ -83,12 +123,12 @@ public enum IFFParser {
             try walk(data, from: typeOffset + 4, to: end) { id, start, payloadEnd in
                 chunks.append(IFFChunk(id: id, data: data.subdata(in: start..<payloadEnd)))
             }
-            return (groupType, chunks + props)
+            return IFFForm(type: groupType, chunks: chunks, propScopes: props)
         }
 
         guard depth < maximumNestingDepth else { return nil }
 
-        var result: (type: String, chunks: [IFFChunk])?
+        var result: IFFForm?
         var inheritedProps = props
         try walk(data, from: typeOffset + 4, to: end) { id, start, payloadEnd in
             guard result == nil else { return }
@@ -99,7 +139,8 @@ public enum IFFParser {
                     try walk(data, from: start + 4, to: payloadEnd) { pid, ps, pe in
                         propChunks.append(IFFChunk(id: pid, data: data.subdata(in: ps..<pe)))
                     }
-                    inheritedProps = propChunks + inheritedProps
+                    // This LIST's PROP is more specific than any outer one.
+                    inheritedProps = [propChunks] + inheritedProps
                 }
             case "FORM", "LIST", "CAT ":
                 result = try search(data, groupID: id, typeOffset: start, end: payloadEnd,

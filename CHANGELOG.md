@@ -42,6 +42,9 @@ Initial public release (proposed).
 - Sliced `Data` inputs read the wrong bytes.
 - HAM and EHB images decoded silently with wrong colours.
 - Transparent pixels were tagged premultiplied with non-zero colour.
+- A repeated property chunk (e.g. a second `CMAP`) now resolves to the last
+  occurrence before `BODY`, as the ILBM specification requires, instead of the
+  first; `PROP` scopes nest correctly and `BODY` is never inherited.
 
 ### Removed
 

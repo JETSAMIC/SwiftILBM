@@ -1274,7 +1274,7 @@ circulating descriptions (including the earlier edition of this reference).
 | 3.1.4 | Nested `LIST` / `CAT ` / `FORM ANIM` (first ILBM/PBM, depth-first) | Supported (depth ≤ 8) |
 | 3.1.5 | `PROP` defaults with inner-over-outer and FORM-over-PROP scoping | Supported |
 | 3.1.6 | Generic / filler / unknown chunks | Skipped |
-| 3.2 | Last property before `BODY` wins; property after `BODY` used only if none precedes it | Partial — the first occurrence wins (deviation) |
+| 3.2 | Last property before `BODY` wins; property after `BODY` used only if none precedes it | Supported |
 | 3.3 | `BMHD` all fields, aspect ratio, page size | Supported (`pixelAspectRatio`; pixels not aspect-corrected) |
 | 3.3 / 6.2 | Palette-only ILBM (`nPlanes` 0, no `BODY`) | Unsupported — rejected (`unsupportedDepth(0)`); no image |
 | 3.4, 5.4 | `CMAP`, partial entries, 4-bit scaling | Supported (scaling on by default, switchable) |

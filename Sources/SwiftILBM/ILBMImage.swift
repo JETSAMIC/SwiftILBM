@@ -119,8 +119,7 @@ public struct ILBMImage: Sendable, Equatable {
     public init(data: Data, options: Options = .default) throws {
         let form = try IFFParser.findForm(in: data, types: [FormType.ilbm.rawValue, FormType.pbm.rawValue])
         let formType = FormType(rawValue: form.type) ?? .ilbm
-        let chunks = form.chunks
-        func chunk(_ id: String) -> Data? { chunks.first(where: { $0.id == id })?.data }
+        func chunk(_ id: String) -> Data? { form.property(id) }
 
         guard let bmhdData = chunk("BMHD") else { throw ILBMError.missingBMHD }
         let bmhd = try BMHDChunk(data: bmhdData)
@@ -148,7 +147,7 @@ public struct ILBMImage: Sendable, Equatable {
         }
 
         let viewportMode = try chunk("CAMG").map { try ILBMViewportMode(camg: $0) }
-        let colorRanges = chunks.filter { $0.id == "CRNG" }.compactMap { ILBMColorRange(crng: $0.data) }
+        let colorRanges = form.repeatedProperty("CRNG").compactMap { ILBMColorRange(crng: $0) }
 
         var cmap = chunk("CMAP").map(CMAPChunk.init(data:))
         if options.expandsLeftJustified4BitPalettes {
@@ -163,7 +162,7 @@ public struct ILBMImage: Sendable, Equatable {
         if colorMode != .trueColor && cmap == nil { throw ILBMError.missingCMAP }
         let palette = cmap?.colors ?? []
 
-        guard let bodyData = chunk("BODY") else { throw ILBMError.missingBODY }
+        guard let bodyData = form.body else { throw ILBMError.missingBODY }
 
         // Decode the BODY rows.
         let rowStride: Int
