@@ -55,23 +55,27 @@ let ns = image.nsImage
 | IFF chunks, big-endian sizes, odd-size pad byte, unknown-chunk skipping | Supported |
 | `FORM ILBM` | Supported |
 | `FORM PBM ` (Deluxe Paint II Enhanced chunky) | Supported (1–8 planes, no mask plane) |
-| Nested `LIST` / `CAT ` / `FORM ANIM` (first image), `PROP` defaults | Supported |
+| Nested `LIST` / `CAT ` / `FORM ANIM` (first image), scoped `PROP` defaults | Supported |
+| Repeated property chunks (last one before `BODY` wins) | Supported |
 | BMHD, incl. `pageWidth/Height`, `xAspect/yAspect` | Supported |
 | Masking 0 (none), 1 (mask plane → alpha), 2 (transparent colour → alpha) | Supported |
 | Masking 3 (lasso) | Partial — rendered opaque |
 | Compression 0 and 1 (ByteRun1, −128 no-op, runs across rows tolerated) | Supported |
+| Other compression values (e.g. Atari `VDAT`) | Unsupported |
 | CMAP, incl. 4-bit left-justified ("OCS") palette scaling | Supported (on by default; off when BMHD sets `BMHDF_CMAPOK`) |
 | 1–8 plane indexed | Supported |
+| Palette-only ILBM (`nPlanes` 0, no `BODY`) | Unsupported — rejected, no image |
 | CAMG clean-up (16-bit junk bits, bogus values) | Supported |
-| CAMG HAM6 / HAM8 | Supported |
+| CAMG HAM6 / HAM8 | Supported (HAM with other depths rejected) |
 | CAMG Extra-Half-Brite | Supported |
 | 6-plane files without CAMG (EHB / HAM6 heuristics) | Supported |
 | CAMG HIRES / LACE / SUPERHIRES | Exposed; no effect on pixels |
 | CAMG dual playfield | Unsupported — decoded as plain indexed |
 | 24- and 32-plane true colour ("deep") ILBM | Supported |
+| 21-plane NewTek and other deep depths | Unsupported |
 | CRNG colour ranges | Parsed and exposed |
 | CCRT, DRNG, GRAB, DEST, SPRT | Ignored |
-| SHAM / PCHG / CTBL dynamic palettes | Unsupported (static CMAP used) |
+| SHAM / PCHG / CTBL / DYCP dynamic palettes | Unsupported (static CMAP used) |
 | ANIM deltas, ACBM / RGBN / RGB8 / DEEP FORMs | Unsupported |
 | Encoding | Unsupported (decoder only) |
 
@@ -93,6 +97,7 @@ Issues and pull requests are welcome; files that SwiftILBM mis-decodes are most 
 
 - Jerry Morrison, Electronic Arts — *"EA IFF 85" Standard for Interchange Format Files* (1985) and *"ILBM" IFF Interleaved Bitmap* (1986).
 - Commodore-Amiga — *Amiga ROM Kernel Reference Manual: Devices* and *Amiga Hardware Reference Manual*, 3rd ed. (1991).
+- *Amiga Developer CD v2.1* IFF form documents (ACBM, ANIM, DEEP, RGBN/RGB8, PCHG and others); full bibliography and errata in [Reference/ILBM-Format.md](Reference/ILBM-Format.md).
 
 ## License
 
