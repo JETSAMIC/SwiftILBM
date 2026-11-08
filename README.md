@@ -62,6 +62,7 @@ let ns = image.nsImage
 | Compression 0 and 1 (ByteRun1, −128 no-op, runs across rows tolerated) | Supported |
 | CMAP, incl. 4-bit left-justified ("OCS") palette scaling | Supported (scaling on by default) |
 | 1–8 plane indexed | Supported |
+| CAMG clean-up (16-bit junk bits, bogus values) | Supported |
 | CAMG HAM6 / HAM8 | Supported |
 | CAMG Extra-Half-Brite | Supported |
 | 6-plane files without CAMG (EHB / HAM6 heuristics) | Supported |

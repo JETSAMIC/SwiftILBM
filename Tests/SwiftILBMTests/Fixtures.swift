@@ -32,11 +32,12 @@ enum Fixture {
     static func bmhd(
         width: UInt16, height: UInt16, planes: UInt8,
         masking: UInt8 = 0, compression: UInt8 = 0, transparent: UInt16 = 0,
-        xAspect: UInt8 = 10, yAspect: UInt8 = 11
+        xAspect: UInt8 = 10, yAspect: UInt8 = 11,
+        pageWidth: UInt16 = 320, pageHeight: UInt16 = 200, flags: UInt8 = 0
     ) -> [UInt8] {
         chunk("BMHD", be16(width) + be16(height) + [0, 0, 0, 0]
-              + [planes, masking, compression, 0] + be16(transparent)
-              + [xAspect, yAspect] + be16(320) + be16(200))
+              + [planes, masking, compression, flags] + be16(transparent)
+              + [xAspect, yAspect] + be16(pageWidth) + be16(pageHeight))
     }
 
     static func cmap(_ colors: [(UInt8, UInt8, UInt8)]) -> [UInt8] {

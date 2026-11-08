@@ -1279,7 +1279,7 @@ circulating descriptions (including the earlier edition of this reference).
 | 3.3 / 6.2 | Palette-only ILBM (`nPlanes` 0, no `BODY`) | Unsupported — rejected (`unsupportedDepth(0)`); no image |
 | 3.4, 5.4 | `CMAP`, partial entries, 4-bit scaling | Supported (scaling on by default, switchable) |
 | 4.3 | `BMHDF_CMAPOK` (BMHD flags bit 7) suppresses scaling | Unsupported — flag ignored (deviation) |
-| 3.5, 5.5 | `CAMG` clean-up (strip 0x7102 in 16-bit values; bogus-value replacement from page size) | Unsupported — raw value used (deviation) |
+| 3.5, 5.5 | `CAMG` clean-up (strip 0x7102 in 16-bit values; bogus-value replacement from page size) | Supported (`ILBMViewportMode.normalized`) |
 | 4.4 | `CAMG` HIRES / LACE / SUPERHIRES / DOUBLESCAN | Exposed; no effect on pixels |
 | 4.4, 6.2 | Dual playfield | Unsupported — decoded as plain indexed |
 | 3.6, 5.2 | Interleaved BODY, 1–8 planes | Supported |

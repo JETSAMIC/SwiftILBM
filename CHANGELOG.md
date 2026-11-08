@@ -45,6 +45,11 @@ Initial public release (proposed).
 - A repeated property chunk (e.g. a second `CMAP`) now resolves to the last
   occurrence before `BODY`, as the ILBM specification requires, instead of the
   first; `PROP` scopes nest correctly and `BODY` is never inherited.
+- `CAMG` values are cleaned up as the ILBM specification directs: 16-bit
+  values lose their non-display bits and bogus values (junk upper word without
+  `EXTENDED_MODE`) no longer switch on HAM or Extra-Half-Brite.
+  `ILBMImage.viewportMode` reports the cleaned-up mode; see
+  `ILBMViewportMode.normalized(pageWidth:pageHeight:)` and `isBogus`.
 
 ### Removed
 

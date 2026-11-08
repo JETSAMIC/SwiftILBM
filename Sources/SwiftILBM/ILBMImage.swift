@@ -90,7 +90,9 @@ public struct ILBMImage: Sendable, Equatable {
     public let palette: [CMAPChunk.Color]
     /// The decoded `BMHD` chunk (masking, aspect ratio, page size, …).
     public let header: BMHDChunk
-    /// Display-mode flags from the `CAMG` chunk, or `nil` if it is absent.
+    /// Display-mode flags from the `CAMG` chunk after the specification's
+    /// clean-up rules (``ILBMViewportMode/normalized(pageWidth:pageHeight:)``),
+    /// or `nil` if the chunk is absent.
     public let viewportMode: ILBMViewportMode?
     /// Colour-cycling ranges from `CRNG` chunks, in file order.
     public let colorRanges: [ILBMColorRange]
@@ -146,7 +148,9 @@ public struct ILBMImage: Sendable, Equatable {
             guard masking != .hasMask else { throw ILBMError.unsupportedMasking(bmhd.masking) }
         }
 
-        let viewportMode = try chunk("CAMG").map { try ILBMViewportMode(camg: $0) }
+        let viewportMode = try chunk("CAMG").map {
+            try ILBMViewportMode(camg: $0).normalized(pageWidth: bmhd.pageWidth, pageHeight: bmhd.pageHeight)
+        }
         let colorRanges = form.repeatedProperty("CRNG").compactMap { ILBMColorRange(crng: $0) }
 
         var cmap = chunk("CMAP").map(CMAPChunk.init(data:))
