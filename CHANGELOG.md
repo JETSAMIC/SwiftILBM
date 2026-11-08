@@ -50,6 +50,8 @@ Initial public release (proposed).
   `EXTENDED_MODE`) no longer switch on HAM or Extra-Half-Brite.
   `ILBMImage.viewportMode` reports the cleaned-up mode; see
   `ILBMViewportMode.normalized(pageWidth:pageHeight:)` and `isBogus`.
+- 4-bit palette scaling is skipped when the BMHD sets `BMHDF_CMAPOK`
+  (flags bit 7); the byte is exposed as `BMHDChunk.flags`.
 
 ### Removed
 

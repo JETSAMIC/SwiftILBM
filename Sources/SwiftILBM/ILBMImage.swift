@@ -47,7 +47,8 @@ public struct ILBMImage: Sendable, Equatable {
         public var maximumPixelCount: Int
         /// Scale palettes whose components all have a zero low nibble
         /// (4-bit OCS/ECS values stored as `n << 4`) to the full 8-bit range.
-        /// Defaults to `true`. See ``CMAPChunk/expandingLeftJustified4Bit()``.
+        /// Defaults to `true`. Never applied when the file sets
+        /// ``BMHDChunk/hasFullRangeCMAP``. See ``CMAPChunk/expandingLeftJustified4Bit()``.
         public var expandsLeftJustified4BitPalettes: Bool
 
         /// Creates decoding options.
@@ -154,7 +155,7 @@ public struct ILBMImage: Sendable, Equatable {
         let colorRanges = form.repeatedProperty("CRNG").compactMap { ILBMColorRange(crng: $0) }
 
         var cmap = chunk("CMAP").map(CMAPChunk.init(data:))
-        if options.expandsLeftJustified4BitPalettes {
+        if options.expandsLeftJustified4BitPalettes && !bmhd.hasFullRangeCMAP {
             cmap = cmap?.expandingLeftJustified4Bit()
         }
 

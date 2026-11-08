@@ -62,3 +62,27 @@ final class BMHDTests: XCTestCase {
         XCTAssertThrowsError(try BMHDChunk(data: d))
     }
 }
+
+/// `BMHDF_CMAPOK`, Reference/ILBM-Format.md sections 4.3 and 5.4.
+final class BMHDFlagsTests: XCTestCase {
+
+    private func image(flags: UInt8) throws -> ILBMImage {
+        try ILBMImage(data: Fixture.form("ILBM", [
+            Fixture.bmhd(width: 2, height: 1, planes: 1, flags: flags),
+            Fixture.cmap([(0x00, 0x00, 0x00), (0xF0, 0x80, 0x10)]),
+            Fixture.chunk("BODY", [0b1000_0000, 0]),
+        ]))
+    }
+
+    func testFlagsByteIsParsed() throws {
+        let header = try image(flags: 0x80).header
+        XCTAssertEqual(header.flags, 0x80)
+        XCTAssertTrue(header.hasFullRangeCMAP)
+        XCTAssertFalse(try image(flags: 0x01).header.hasFullRangeCMAP)
+    }
+
+    func testCMAPOKSuppressesFourBitScaling() throws {
+        XCTAssertEqual(Array(try image(flags: 0).pixels[0 ..< 3]), [0xFF, 0x88, 0x11])
+        XCTAssertEqual(Array(try image(flags: 0x80).pixels[0 ..< 3]), [0xF0, 0x80, 0x10])
+    }
+}

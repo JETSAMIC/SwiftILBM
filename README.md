@@ -60,7 +60,7 @@ let ns = image.nsImage
 | Masking 0 (none), 1 (mask plane → alpha), 2 (transparent colour → alpha) | Supported |
 | Masking 3 (lasso) | Partial — rendered opaque |
 | Compression 0 and 1 (ByteRun1, −128 no-op, runs across rows tolerated) | Supported |
-| CMAP, incl. 4-bit left-justified ("OCS") palette scaling | Supported (scaling on by default) |
+| CMAP, incl. 4-bit left-justified ("OCS") palette scaling | Supported (on by default; off when BMHD sets `BMHDF_CMAPOK`) |
 | 1–8 plane indexed | Supported |
 | CAMG clean-up (16-bit junk bits, bogus values) | Supported |
 | CAMG HAM6 / HAM8 | Supported |

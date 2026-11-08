@@ -10,7 +10,7 @@ import Foundation
 ///     UBYTE nPlanes           number of bitplanes
 ///     UBYTE masking           0 none, 1 mask plane, 2 transparent colour, 3 lasso
 ///     UBYTE compression       0 none, 1 ByteRun1
-///     UBYTE pad1              unused, written as 0
+///     UBYTE flags             pad1 in the 1986 spec; bit 7 = BMHDF_CMAPOK
 ///     UWORD transparentColor
 ///     UBYTE xAspect, yAspect  pixel aspect ratio
 ///     WORD  pageWidth, pageHeight  source page size in pixels
@@ -52,6 +52,9 @@ public struct BMHDChunk: Sendable, Equatable {
     public let masking: UInt8
     /// Raw compression method; see ``compressionMode``.
     public let compression: UInt8
+    /// The byte at offset 11: `pad1` in the 1986 specification, later named
+    /// `flags`. Only bit 7 (``hasFullRangeCMAP``) is defined.
+    public let flags: UInt8
     /// Palette index treated as transparent when ``masking`` is 2.
     public let transparentColor: UInt16
     /// Horizontal component of the pixel aspect ratio (0 if unknown).
@@ -77,13 +80,18 @@ public struct BMHDChunk: Sendable, Equatable {
         self.nPlanes          = data[base + 8]
         self.masking          = data[base + 9]
         self.compression      = data[base + 10]
-        // pad1 at offset 11 — ignored
+        self.flags            = data[base + 11]
         self.transparentColor = IFFParser.beUInt16(data, at: 12)
         self.xAspect          = data[base + 14]
         self.yAspect          = data[base + 15]
         self.pageWidth        = IFFParser.beInt16(data, at: 16)
         self.pageHeight       = IFFParser.beInt16(data, at: 18)
     }
+
+    /// Whether `BMHDF_CMAPOK` (``flags`` bit 7) is set: the writer declares
+    /// that the `CMAP` holds genuine 8-bit values, so a reader must not apply
+    /// the 4-bit left-justified palette heuristic.
+    public var hasFullRangeCMAP: Bool { flags & 0x80 != 0 }
 
     /// ``masking`` as an enum, or `nil` for an undefined value.
     public var maskingMode: Masking? { Masking(rawValue: masking) }
